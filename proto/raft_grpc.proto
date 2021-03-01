@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package raftgrpc;
+
+option go_package = "proto;raftgrpc";
+
+service Raft {
+
+}

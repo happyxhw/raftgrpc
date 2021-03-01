@@ -1,11 +1,8 @@
 package raftgrpc
 
 import (
-	"sync"
-
 	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
-	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	"go.etcd.io/etcd/server/v3/wal"
 
@@ -19,7 +16,6 @@ type commit struct {
 
 type raftNode struct {
 	id    uint64   // node id
-	peers sync.Map // peers map: id -> grpc client
 	join  bool     // node is joining an existing cluster
 
 	walDir        string // path to WAL directory
@@ -39,7 +35,7 @@ type raftNode struct {
 	snapshotterReady chan *snap.Snapshotter // signals when snapshotter is ready
 
 	snapCount uint64
-	transport *rafthttp.Transporter
+	transport *grpcTransport
 
 	logger *zap.Logger
 }

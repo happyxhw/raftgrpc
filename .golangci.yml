@@ -1,0 +1,33 @@
+linters:
+  disable-all: false
+  enable-all: false
+  enable:
+    - megacheck
+    - staticcheck
+    - deadcode
+    - varcheck
+    - gosimple
+    - unused
+    - prealloc
+    - scopelint
+    - gocritic
+    - goimports
+    - unconvert
+    - govet
+    - nakedret
+    - structcheck
+  #    - gosec
+  disable:
+    - maligned
+    - interfacer
+    - typecheck
+    - dupl
+
+run:
+  deadline: 10m
+  tests: false
+  skip-files:
+    - deep/thrift.go
+  skip-dirs:
+    - proto
+    - thrift

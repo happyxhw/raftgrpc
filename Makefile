@@ -1,5 +1,9 @@
 .PHONY: proto
 proto:
-	protoc --go_out=. --go_opt=paths=source_relative \
-        --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+	protoc -I=. \
+        -I=./vendor \
+        -I=${HOME}/work/protobuf \
+        --gofast_out=plugins=grpc:. \
         proto/raft_grpc.proto
+
+# go get github.com/gogo/protobuf/protoc-gen-gofast

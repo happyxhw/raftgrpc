@@ -4,6 +4,26 @@ package raftgrpc;
 
 option go_package = "proto;raftgrpc";
 
-service Raft {
+import "go.etcd.io/etcd/raft/v3/raftpb/raft.proto";
+import "gogoproto/gogo.proto";
 
+service Raft {
+  rpc Send(SendReq) returns (SendResp) {}
+}
+
+message NodeInfo {
+  uint64 ID    = 1;
+  string Addr  = 2;
+  string Port  = 3;
+  string Error = 4;
+}
+
+message SendReq {
+  raftpb.Message msg = 1;
+}
+
+message SendResp {
+  bool success  = 1;
+  string error  = 2;
+  NodeInfo node = 3;
 }

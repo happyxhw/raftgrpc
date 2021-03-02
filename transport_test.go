@@ -19,10 +19,10 @@ func Test_grpcTransport_start(t *testing.T) {
 		errCh: make(chan error),
 	}
 	go func() {
-		time.Sleep(time.Second*5)
-		ts.stop()
+		time.Sleep(time.Second*50)
+		ts.Stop()
 	}()
-	if err := ts.start(&p, logger.GetLogger()); err != nil {
+	if err := ts.Start(&p, logger.GetLogger()); err != nil {
 		t.Fatal(err)
 	}
 }

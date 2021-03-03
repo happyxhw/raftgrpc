@@ -4,3 +4,4 @@
 raftgrpc-*
 vendor
 example/example
+example/raftcmd

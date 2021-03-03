@@ -7,7 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang/protobuf/proto"
 	grpcMiddleware "github.com/grpc-ecosystem/go-grpc-middleware"
+	grpcZap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
 	grpcRecovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
 	grpcRetry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
 	"github.com/happyxhw/gopkg/logger"
@@ -18,7 +20,7 @@ import (
 
 type peer struct {
 	id     uint64
-	url    string
+	addr   string
 	conn   *grpc.ClientConn
 	client pb.RaftClient
 }
@@ -47,18 +49,18 @@ func NewGrpcTransport(node *RaftNode, logger *zap.Logger) *GrpcTransport {
 }
 
 // Start transport
-func (gt *GrpcTransport) Start(p *peer) error {
-	lis, err := net.Listen("tcp", p.url)
+func (gt *GrpcTransport) Start(addr string) error {
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	s := grpc.NewServer(
 		grpc.StreamInterceptor(grpcMiddleware.ChainStreamServer(
-			// grpcZap.StreamServerInterceptor(gt.logger),
+			grpcZap.StreamServerInterceptor(gt.logger),
 			grpcRecovery.StreamServerInterceptor(),
 		)),
 		grpc.UnaryInterceptor(grpcMiddleware.ChainUnaryServer(
-			// grpcZap.UnaryServerInterceptor(gt.logger),
+			grpcZap.UnaryServerInterceptor(gt.logger),
 			grpcRecovery.UnaryServerInterceptor(),
 		)),
 	)
@@ -92,6 +94,44 @@ func (gt *GrpcTransport) Send(ctx context.Context, msg *pb.SendReq) (*pb.SendRes
 	return &resp, nil
 }
 
+// Join a cluster
+func (gt *GrpcTransport) Join(ctx context.Context, info *pb.NodeInfo) (*pb.JoinResp, error) {
+	id := genId(info.Addr)
+	byt, _ := proto.Marshal(info)
+	cc := raftpb.ConfChange{
+		Type:    raftpb.ConfChangeAddNode,
+		NodeID:  id,
+		Context: byt,
+	}
+	err := gt.raftNode.ProposeConfChange(context.Background(), cc)
+	if err != nil {
+		return nil, err
+	}
+	resp := &pb.JoinResp{
+		Success: true,
+	}
+	return resp, nil
+}
+
+// Leave a cluster
+func (gt *GrpcTransport) Leave(ctx context.Context, info *pb.NodeInfo) (*pb.LeaveResp, error) {
+	id := genId(info.Addr)
+	byt, _ := proto.Marshal(info)
+	cc := raftpb.ConfChange{
+		Type:    raftpb.ConfChangeRemoveNode,
+		NodeID:  id,
+		Context: byt,
+	}
+	err := gt.raftNode.ProposeConfChange(context.Background(), cc)
+	if err != nil {
+		return nil, err
+	}
+	resp := &pb.LeaveResp{
+		Success: true,
+	}
+	return resp, nil
+}
+
 // Stop transport
 func (gt *GrpcTransport) Stop() {
 	gt.stopCh <- struct{}{}
@@ -108,7 +148,7 @@ func (gt *GrpcTransport) SendMsgList(messages []raftpb.Message) error {
 			}
 			_, err := p.client.Send(context.Background(), &req)
 			if err != nil {
-				gt.logger.Error("send msg", zap.Uint64("id", m.To), zap.String("url", p.url), zap.Error(err))
+				gt.logger.Error("send msg", zap.Uint64("id", m.To), zap.String("addr", p.addr), zap.Error(err))
 				gt.raftNode.ReportUnreachable(p.id)
 			}
 		}
@@ -123,8 +163,8 @@ func (gt *GrpcTransport) AddPeer(node *pb.NodeInfo) error {
 		return err
 	}
 	p := peer{
-		id:     node.ID,
-		url:    net.JoinHostPort(node.Addr, node.Port),
+		id:     node.Id,
+		addr:   node.Addr,
 		conn:   conn,
 		client: cli,
 	}
@@ -170,7 +210,7 @@ func (gt *GrpcTransport) newClient(node *pb.NodeInfo) (*grpc.ClientConn, pb.Raft
 		grpcRetry.WithBackoff(grpcRetry.BackoffLinear(100 * time.Millisecond)),
 		grpcRetry.WithMax(3),
 	}
-	conn, err := grpc.Dial(net.JoinHostPort(node.Addr, node.Port),
+	conn, err := grpc.Dial(node.Addr,
 		grpc.WithStreamInterceptor(grpcRetry.StreamClientInterceptor(opts...)),
 		grpc.WithUnaryInterceptor(grpcRetry.UnaryClientInterceptor(opts...)),
 		grpc.WithInsecure(),

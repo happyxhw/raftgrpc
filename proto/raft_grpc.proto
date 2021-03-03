@@ -9,13 +9,14 @@ import "gogoproto/gogo.proto";
 
 service Raft {
   rpc Send(SendReq) returns (SendResp) {}
+  rpc Join(NodeInfo) returns (JoinResp) {}
+  rpc Leave(NodeInfo) returns (LeaveResp) {}
 }
 
 message NodeInfo {
-  uint64 ID    = 1;
-  string Addr  = 2;
-  string Port  = 3;
-  string Error = 4;
+  uint64 id    = 1;
+  string addr  = 2;
+  string error = 3;
 }
 
 message SendReq {
@@ -23,7 +24,16 @@ message SendReq {
 }
 
 message SendResp {
-  bool success  = 1;
-  string error  = 2;
-  NodeInfo node = 3;
+  bool success = 1;
+  string error = 2;
+}
+
+message JoinResp {
+  bool success = 1;
+  string error = 2;
+}
+
+message LeaveResp {
+  bool success = 1;
+  string error = 2;
 }

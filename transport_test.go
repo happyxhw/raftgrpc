@@ -7,8 +7,8 @@ import (
 
 func Test_grpcTransport_start(t *testing.T) {
 	p := peer{
-		id:  1,
-		url: "127.0.0.1:8001",
+		id:   1,
+		addr: "127.0.0.1:8001",
 	}
 
 	ts := GrpcTransport{

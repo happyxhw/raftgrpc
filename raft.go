@@ -2,8 +2,7 @@ package raftgrpc
 
 import (
 	"context"
-	"hash/fnv"
-	"net"
+	"fmt"
 	pb "raftgrpc/proto"
 	"time"
 
@@ -20,14 +19,12 @@ type commit struct {
 
 // RaftNode raft node
 type RaftNode struct {
-	proposeCh    <-chan string            // proposed messages (k,v)
-	confChangeCh <-chan raftpb.ConfChange // proposed cluster config changes
-	commitCh     chan<- *commit           // entries committed to log (k,v)
-	errorCh      chan<- error             // errors from raft session
+	commitCh chan<- *commit // entries committed to log (k,v)
+	errorCh  chan<- error   // errors from raft session
 
-	id   uint64 // node id
-	join bool   // node is joining an existing cluster
-
+	id    uint64 // node id
+	join  bool   // node is joining an existing cluster
+	addr  string
 	peers []string
 
 	// raft backing for the commit/error channel
@@ -47,18 +44,17 @@ var defaultSnapshotCount uint64 = 10000
 // provided the proposal channel. All log entries are replayed over the
 // commit channel, followed by a nil message (to indicate the channel is
 // current), then new log entries. To shutdown, close proposeC and read errorC.
-func NewRaftNode(url string, join bool, peers []string, getSnapshotFn func() ([]byte, error), proposeCh <-chan string,
-	confChangeCh <-chan raftpb.ConfChange, logger *zap.Logger) (<-chan *commit, <-chan error, <-chan *snap.Snapshotter) {
+func NewRaftNode(addr string, join bool, peers []string, getSnapshotFn func() ([]byte, error),
+	logger *zap.Logger) (<-chan *commit, <-chan error, <-chan *snap.Snapshotter, *RaftNode) {
 
 	commitCh := make(chan *commit)
 	errorCh := make(chan error)
-	id := genId(url)
-	rc := &RaftNode{
-		proposeCh:        proposeCh,
-		confChangeCh:     confChangeCh,
+	id := genId(addr)
+	rn := &RaftNode{
 		commitCh:         commitCh,
 		errorCh:          errorCh,
 		id:               id,
+		addr:             addr,
 		join:             join,
 		peers:            peers,
 		stopCh:           make(chan struct{}),
@@ -66,14 +62,18 @@ func NewRaftNode(url string, join bool, peers []string, getSnapshotFn func() ([]
 		snapshotterReady: make(chan *snap.Snapshotter, 1),
 		// rest of structure populated after WAL replay
 	}
-	rc.snapHandler = NewSnapshot(id, getSnapshotFn, commitCh, rc.stopCh, rc.logger)
-	go rc.startRaft()
-	return commitCh, errorCh, rc.snapshotterReady
+	rn.snapHandler = NewSnapshot(id, getSnapshotFn, commitCh, rn.stopCh, rn.logger)
+	return commitCh, errorCh, rn.snapshotterReady, rn
+}
+
+// Start start node
+func (rn *RaftNode) Start() {
+	rn.startRaft()
 }
 
 // publishEntries writes committed log entries to commit channel and returns
 // whether all entries could be published.
-func (rc *RaftNode) publishEntries(entries []raftpb.Entry) (<-chan struct{}, bool) {
+func (rn *RaftNode) publishEntries(entries []raftpb.Entry) (<-chan struct{}, bool) {
 	if len(entries) == 0 {
 		return nil, true
 	}
@@ -91,21 +91,21 @@ func (rc *RaftNode) publishEntries(entries []raftpb.Entry) (<-chan struct{}, boo
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
 			_ = cc.Unmarshal(entries[i].Data)
-			confState := *rc.node.ApplyConfChange(cc)
-			rc.snapHandler.UpdateConfState(confState)
+			confState := *rn.node.ApplyConfChange(cc)
+			rn.snapHandler.UpdateConfState(confState)
 			switch cc.Type {
 			case raftpb.ConfChangeAddNode:
 				if len(cc.Context) > 0 {
 					var node pb.NodeInfo
 					_ = node.Unmarshal(cc.Context)
-					_ = rc.transport.AddPeer(&node)
+					_ = rn.transport.AddPeer(&node)
 				}
 			case raftpb.ConfChangeRemoveNode:
-				if cc.NodeID == rc.id {
-					rc.logger.Info("shutting down")
+				if cc.NodeID == rn.id {
+					rn.logger.Info("shutting down")
 					return nil, false
 				}
-				rc.transport.RemovePeer(cc.NodeID)
+				rn.transport.RemovePeer(cc.NodeID)
 			}
 		}
 	}
@@ -115,151 +115,121 @@ func (rc *RaftNode) publishEntries(entries []raftpb.Entry) (<-chan struct{}, boo
 	if len(data) > 0 {
 		applyDoneCh = make(chan struct{}, 1)
 		select {
-		case rc.commitCh <- &commit{data, applyDoneCh}:
-		case <-rc.stopCh:
+		case rn.commitCh <- &commit{data, applyDoneCh}:
+		case <-rn.stopCh:
 			return nil, false
 		}
 	}
 
 	// after commit, update appliedIndex
-	rc.snapHandler.UpdateAppliedIndex(entries[len(entries)-1].Index)
+	rn.snapHandler.UpdateAppliedIndex(entries[len(entries)-1].Index)
 	return applyDoneCh, true
 }
 
-func (rc *RaftNode) writeError(err error) {
-	rc.transport.Stop()
-	close(rc.commitCh)
-	rc.errorCh <- err
-	close(rc.errorCh)
-	rc.node.Stop()
+func (rn *RaftNode) writeError(err error) {
+	rn.transport.Stop()
+	close(rn.commitCh)
+	rn.errorCh <- err
+	close(rn.errorCh)
+	rn.node.Stop()
 }
 
 // stop closes http, closes all channels, and stops raft.
-func (rc *RaftNode) stop() {
-	rc.transport.Stop()
-	close(rc.commitCh)
-	close(rc.errorCh)
-	rc.node.Stop()
+func (rn *RaftNode) stop() {
+	rn.transport.Stop()
+	close(rn.commitCh)
+	close(rn.errorCh)
+	rn.node.Stop()
 }
 
-func (rc *RaftNode) startRaft() {
+func (rn *RaftNode) startRaft() {
 	// signal replay has finished
-	oldWal := rc.snapHandler.ExistWal()
-	rc.snapHandler.InitSnapshot()
-	rc.snapshotterReady <- rc.snapHandler.Snapshotter()
+	oldWal := rn.snapHandler.ExistWal()
+	rn.snapHandler.InitSnapshot()
+	rn.snapshotterReady <- rn.snapHandler.Snapshotter()
 
-	rPeers := make([]raft.Peer, len(rc.peers))
-	for i, p := range rc.peers {
+	rPeers := make([]raft.Peer, len(rn.peers))
+	for i, p := range rn.peers {
 		rPeers[i] = raft.Peer{ID: genId(p)}
 	}
 	// rPeers := raftNode.transport.getPeers()
 	c := &raft.Config{
-		ID:                        rc.id,
+		ID:                        rn.id,
 		ElectionTick:              2,
 		HeartbeatTick:             1,
-		Storage:                   rc.snapHandler.RaftStorage(),
+		Storage:                   rn.snapHandler.RaftStorage(),
 		MaxSizePerMsg:             1024 * 1024,
 		MaxInflightMsgs:           256,
 		MaxUncommittedEntriesSize: 1 << 30,
 	}
-
-	if oldWal || rc.join {
-		rc.node = raft.RestartNode(c)
+	if oldWal || rn.join || len(rPeers) == 0 {
+		rn.node = raft.RestartNode(c)
 	} else {
-		rc.node = raft.StartNode(c, rPeers)
+		fmt.Println("start")
+		rn.node = raft.StartNode(c, rPeers)
 	}
-	rc.transport = NewGrpcTransport(rc, rc.logger)
+	rn.transport = NewGrpcTransport(rn, rn.logger)
 
-	for _, p := range rc.peers {
-		host, port, _ := net.SplitHostPort(p)
+	for _, p := range rn.peers {
 		node := pb.NodeInfo{
-			ID:   genId(p),
-			Addr: host,
-			Port: port,
+			Id:   genId(p),
+			Addr: p,
 		}
-		_ = rc.transport.AddPeer(&node)
+		_ = rn.transport.AddPeer(&node)
 	}
-	go rc.transport.Start(rc.transport.getPeer(rc.id))
-	go rc.serveChannels()
+	go rn.serveChannels()
+	rn.transport.Start(rn.addr)
 }
 
 var snapshotCatchUpEntriesN uint64 = 10000
 
+func (rn *RaftNode) Propose(data []byte) error {
+	err := rn.node.Propose(context.TODO(), data)
+	return err
+}
+
 // process for new propose && conf state change
-func (rc *RaftNode) serveChannels() {
-	defer rc.snapHandler.Close()
+func (rn *RaftNode) serveChannels() {
+	defer rn.snapHandler.Close()
 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-
-	// send proposals over raft
-	go func() {
-		confChangeCount := uint64(0)
-
-		for rc.proposeCh != nil && rc.confChangeCh != nil {
-			select {
-			case prop, ok := <-rc.proposeCh:
-				if !ok {
-					rc.proposeCh = nil
-				} else {
-					// blocks until accepted by raft state machine
-					_ = rc.node.Propose(context.TODO(), []byte(prop))
-				}
-
-			case cc, ok := <-rc.confChangeCh:
-				if !ok {
-					rc.confChangeCh = nil
-				} else {
-					confChangeCount++
-					cc.ID = confChangeCount
-					_ = rc.node.ProposeConfChange(context.TODO(), cc)
-				}
-			}
-		}
-		// client closed channel; shutdown raft if not already
-		close(rc.stopCh)
-	}()
 	// event loop on raft state machine updates
 	for {
 		select {
 		case <-ticker.C:
-			rc.node.Tick()
+			rn.node.Tick()
 		// store raft entries to wal, then publish over commit channel
-		case rd := <-rc.node.Ready():
-			rc.snapHandler.SaveToSnapshot(rd)
-			_ = rc.transport.SendMsgList(rd.Messages)
-			applyDoneCh, ok := rc.publishEntries(rc.snapHandler.EntriesToApply(rd.CommittedEntries))
+		case rd := <-rn.node.Ready():
+			rn.snapHandler.SaveToSnapshot(rd)
+			_ = rn.transport.SendMsgList(rd.Messages)
+			applyDoneCh, ok := rn.publishEntries(rn.snapHandler.EntriesToApply(rd.CommittedEntries))
 			if !ok {
-				rc.stop()
+				rn.stop()
 				return
 			}
-			rc.snapHandler.MaybeTriggerSnapshot(applyDoneCh)
-			rc.node.Advance()
+			rn.snapHandler.MaybeTriggerSnapshot(applyDoneCh)
+			rn.node.Advance()
 
-		case <-rc.stopCh:
-			rc.stop()
+		case <-rn.stopCh:
+			rn.stop()
 			return
 		}
 	}
 }
 
-func (rc *RaftNode) Process(ctx context.Context, m raftpb.Message) error {
-	return rc.node.Step(ctx, m)
+func (rn *RaftNode) Process(ctx context.Context, m raftpb.Message) error {
+	return rn.node.Step(ctx, m)
 }
-func (rc *RaftNode) IsIDRemoved(id uint64) bool {
+func (rn *RaftNode) ProposeConfChange(ctx context.Context, m raftpb.ConfChange) error {
+	return rn.node.ProposeConfChange(ctx, m)
+}
+func (rn *RaftNode) IsIDRemoved(id uint64) bool {
 	return false
 }
-func (rc *RaftNode) ReportUnreachable(id uint64) {
-	rc.node.ReportUnreachable(id)
+func (rn *RaftNode) ReportUnreachable(id uint64) {
+	rn.node.ReportUnreachable(id)
 }
-func (rc *RaftNode) ReportSnapshot(id uint64, status raft.SnapshotStatus) {
-	rc.node.ReportSnapshot(id, status)
-}
-
-// 生成节点随机id，64 uint
-func genId(url string) uint64 {
-	// y := nuid.Next()
-	h := fnv.New64()
-	_, _ = h.Write([]byte(url))
-	return h.Sum64()
+func (rn *RaftNode) ReportSnapshot(id uint64, status raft.SnapshotStatus) {
+	rn.node.ReportSnapshot(id, status)
 }

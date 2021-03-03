@@ -54,11 +54,11 @@ func (gt *GrpcTransport) Start(p *peer) error {
 	}
 	s := grpc.NewServer(
 		grpc.StreamInterceptor(grpcMiddleware.ChainStreamServer(
-			// grpcZap.StreamServerInterceptor(logger),
+			// grpcZap.StreamServerInterceptor(gt.logger),
 			grpcRecovery.StreamServerInterceptor(),
 		)),
 		grpc.UnaryInterceptor(grpcMiddleware.ChainUnaryServer(
-			// grpcZap.UnaryServerInterceptor(logger),
+			// grpcZap.UnaryServerInterceptor(gt.logger),
 			grpcRecovery.UnaryServerInterceptor(),
 		)),
 	)

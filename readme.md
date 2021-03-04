@@ -8,7 +8,7 @@
 
 ### build
 ```shell
-git clone https://git.happyxhw.cn/happyxhw/raftgrpc.git -b develop
+git clone https://github.com/happyxhw/raftgrpc.git -b develop
 cd raftgrpc/example
 
 go build

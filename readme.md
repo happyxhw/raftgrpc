@@ -4,11 +4,11 @@
 
 [Official Raft Example](https://github.com/etcd-io/etcd/tree/master/contrib/raftexample)
 
-![basic](https://user-images.githubusercontent.com/44490504/109909995-20d1b700-7ce2-11eb-946e-f7a8615bb5ca.png)
+<img src="https://user-images.githubusercontent.com/44490504/109909995-20d1b700-7ce2-11eb-946e-f7a8615bb5ca.png" alt="basic" style="zoom:33%;" />
 
 ### build
 ```shell
-git clone https://git.happyxhw.cn/happyxhw/raftgrpc.git
+git clone https://git.happyxhw.cn/happyxhw/raftgrpc.git -b develop
 cd raftgrpc/example
 
 go build

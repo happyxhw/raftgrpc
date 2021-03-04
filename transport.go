@@ -9,7 +9,8 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	grpcMiddleware "github.com/grpc-ecosystem/go-grpc-middleware"
-	// grpcZap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
+	grpcZap "github.com/grpc-ecosystem/go-grpc-middleware/logging/zap"
+
 	// grpcRecovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
 	grpcRetry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
 	"github.com/happyxhw/gopkg/logger"
@@ -56,11 +57,11 @@ func (gt *GrpcTransport) Start(addr string) error {
 	}
 	s := grpc.NewServer(
 		grpc.StreamInterceptor(grpcMiddleware.ChainStreamServer(
-			// grpcZap.StreamServerInterceptor(gt.logger),
+			grpcZap.StreamServerInterceptor(gt.logger),
 			// grpcRecovery.StreamServerInterceptor(),
 		)),
 		grpc.UnaryInterceptor(grpcMiddleware.ChainUnaryServer(
-			// grpcZap.UnaryServerInterceptor(gt.logger),
+			grpcZap.UnaryServerInterceptor(gt.logger),
 			// grpcRecovery.UnaryServerInterceptor(),
 		)),
 	)

@@ -167,7 +167,7 @@ func (rn *RaftNode) startRaft() {
 		MaxInflightMsgs:           256,
 		MaxUncommittedEntriesSize: 1 << 30,
 	}
-	if oldWal || rn.join || len(rPeers) == 0 {
+	if oldWal || rn.join {
 		rn.node = raft.RestartNode(c)
 	} else {
 		rn.node = raft.StartNode(c, rPeers)

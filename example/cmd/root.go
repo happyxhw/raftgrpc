@@ -82,7 +82,7 @@ func newJoin() *cobra.Command {
 				logger.Error("join", zap.Error(err))
 				return
 			}
-			startNode(addr, true,nil)
+			startNode(addr, false, nil)
 		},
 		Example: `
         ./raftcmd join --addr 127.0.0.1:8002 --cluster 127.0.0.1:8001

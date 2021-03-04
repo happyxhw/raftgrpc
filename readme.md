@@ -4,6 +4,7 @@
 
 [Official Raft Example](https://github.com/etcd-io/etcd/tree/master/contrib/raftexample)
 
+![basic](https://user-images.githubusercontent.com/44490504/109909995-20d1b700-7ce2-11eb-946e-f7a8615bb5ca.png)
 
 ### build
 ```shell

@@ -184,7 +184,8 @@ func newGet() *cobra.Command {
 
 func startNode(addr string, join bool, peers []string) {
 	logger.Info("starting node", zap.String("add", addr), zap.Strings("peers", peers))
-	rn := raftgrpc.NewRaftNode(addr, join, peers, logger.GetLogger())
+	kv := raftgrpc.NewMapKVStore()
+	rn := raftgrpc.NewRaftNode(addr, join, peers, kv)
 	rn.Start()
 }
 

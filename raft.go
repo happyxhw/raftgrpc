@@ -1,27 +1,37 @@
 package raftgrpc
 
 import (
-	"bytes"
 	"context"
-	"encoding/gob"
 	pb "raftgrpc/proto"
 	"time"
 
+	"github.com/happyxhw/gopkg/logger"
 	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/snap"
 	"go.uber.org/zap"
 )
 
-type commit struct {
-	data        []string
-	applyDoneCh chan<- struct{}
+// KvStore interface
+type KvStore interface {
+	Get(string) (string, bool)       // get a key
+	Put(string, string) error        // put a pair key value
+	Del(string) (string, error)      // delete a key
+	Recover(*snap.Snapshotter) error // recover store when start up
+	Snapshot() ([]byte, error)       // get store snapshot
+}
+
+// Transport interface
+type Transport interface {
+}
+
+// Snapshot interface
+type Snapshot interface {
+	Load() (*raftpb.Snapshot, error)
 }
 
 // RaftNode raft node
 type RaftNode struct {
-	commitCh chan *commit // entries committed to log (k,v)
-	errorCh  chan error   // errors from raft session
-
 	id    uint64 // node id
 	join  bool   // node is joining an existing cluster
 	addr  string
@@ -31,39 +41,29 @@ type RaftNode struct {
 	node             raft.Node
 	snapshotterReady chan struct{} // signals when snapshotter is ready
 	transport        *GrpcTransport
-	snapHandler      *Snapshot
+	snapHandler      *EtcdSnapshot
 	stopCh           chan struct{}
 
-	kvStore *KvStore // signals proposal channel closed
-
-	logger *zap.Logger
+	kvStore KvStore // signals proposal channel closed
 }
 
 var defaultSnapshotCount uint64 = 10000
 
-// NewRaftNode initiates a raft instance and returns a committed log entry
-// channel and error channel. Proposals for log updates are sent over the
-// provided the proposal channel. All log entries are replayed over the
-// commit channel, followed by a nil message (to indicate the channel is
-// current), then new log entries. To shutdown, close proposeC and read errorC.
-func NewRaftNode(addr string, join bool, peers []string, logger *zap.Logger) *RaftNode {
-
-	commitCh := make(chan *commit)
-	errorCh := make(chan error)
+// NewRaftNode initiates a raft instance
+func NewRaftNode(addr string, join bool, peers []string, kv KvStore) *RaftNode {
 	id := genId(addr)
 	rn := &RaftNode{
-		commitCh:         commitCh,
-		errorCh:          errorCh,
 		id:               id,
 		addr:             addr,
 		join:             join,
 		peers:            peers,
 		stopCh:           make(chan struct{}),
-		logger:           logger,
 		snapshotterReady: make(chan struct{}, 1),
+
+		kvStore: kv,
 		// rest of structure populated after WAL replay
 	}
-	rn.snapHandler = NewSnapshot(id, rn.kvStore.GetSnapshot, commitCh, rn.stopCh, rn.logger)
+	rn.snapHandler = NewEtcdSnapshot(rn.id, rn.kvStore.Snapshot)
 	return rn
 }
 
@@ -71,19 +71,19 @@ func NewRaftNode(addr string, join bool, peers []string, logger *zap.Logger) *Ra
 func (rn *RaftNode) Start() {
 	go func() {
 		<-rn.snapshotterReady
-		rn.kvStore = NewKVStore(rn.snapHandler.Snapshotter(), rn.commitCh, rn.errorCh, rn.logger)
+		if err := rn.kvStore.Recover(rn.snapHandler.snapshotter); err != nil {
+			logger.Fatal("recover store snapshot", zap.Error(err))
+		}
 	}()
 	rn.startRaft()
 }
 
-// publishEntries writes committed log entries to commit channel and returns
-// whether all entries could be published.
-func (rn *RaftNode) publishEntries(entries []raftpb.Entry) (<-chan struct{}, bool) {
+// processEntries writes committed log
+func (rn *RaftNode) processEntries(entries []raftpb.Entry) ([][]byte, bool) {
 	if len(entries) == 0 {
 		return nil, true
 	}
-
-	data := make([]string, 0, len(entries))
+	data := make([][]byte, 0, len(entries))
 	for i := range entries {
 		switch entries[i].Type {
 		case raftpb.EntryNormal:
@@ -91,13 +91,15 @@ func (rn *RaftNode) publishEntries(entries []raftpb.Entry) (<-chan struct{}, boo
 				// ignore empty messages
 				break
 			}
-			s := string(entries[i].Data)
-			data = append(data, s)
+			data = append(data, entries[i].Data)
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
 			_ = cc.Unmarshal(entries[i].Data)
 			confState := *rn.node.ApplyConfChange(cc)
+
+			// TODO
 			rn.snapHandler.UpdateConfState(confState)
+
 			switch cc.Type {
 			case raftpb.ConfChangeAddNode:
 				if len(cc.Context) > 0 {
@@ -107,50 +109,33 @@ func (rn *RaftNode) publishEntries(entries []raftpb.Entry) (<-chan struct{}, boo
 				}
 			case raftpb.ConfChangeRemoveNode:
 				if cc.NodeID == rn.id {
-					rn.logger.Info("shutting down")
+					logger.Info("shutting down")
 					return nil, false
 				}
 				rn.transport.RemovePeer(cc.NodeID)
 			}
 		}
 	}
-
-	var applyDoneCh chan struct{}
-
-	if len(data) > 0 {
-		applyDoneCh = make(chan struct{}, 1)
-		select {
-		case rn.commitCh <- &commit{data, applyDoneCh}:
-		case <-rn.stopCh:
-			return nil, false
-		}
-	}
-
 	// after commit, update appliedIndex
+	// TODO
 	rn.snapHandler.UpdateAppliedIndex(entries[len(entries)-1].Index)
-	return applyDoneCh, true
+	return data, true
 }
 
-func (rn *RaftNode) writeError(err error) {
-	rn.transport.Stop()
-	close(rn.commitCh)
-	rn.errorCh <- err
-	close(rn.errorCh)
-	rn.node.Stop()
-}
-
-// stop closes http, closes all channels, and stops raft.
+// stop node
 func (rn *RaftNode) stop() {
 	rn.transport.Stop()
-	close(rn.commitCh)
-	close(rn.errorCh)
 	rn.node.Stop()
 }
 
+// start node
 func (rn *RaftNode) startRaft() {
 	// signal replay has finished
+	// TODOs
 	oldWal := rn.snapHandler.ExistWal()
-	rn.snapHandler.InitSnapshot()
+	if err := rn.snapHandler.initSnapshot(); err != nil {
+		logger.Fatal("init snapshot", zap.Error(err))
+	}
 	rn.snapshotterReady <- struct{}{}
 
 	rPeers := make([]raft.Peer, len(rn.peers))
@@ -172,7 +157,7 @@ func (rn *RaftNode) startRaft() {
 	} else {
 		rn.node = raft.StartNode(c, rPeers)
 	}
-	rn.transport = NewGrpcTransport(rn, rn.logger)
+	rn.transport = NewGrpcTransport(rn, logger.GetLogger())
 
 	for _, p := range rn.peers {
 		node := pb.NodeInfo{
@@ -181,24 +166,28 @@ func (rn *RaftNode) startRaft() {
 		}
 		_ = rn.transport.AddPeer(&node)
 	}
-	go rn.serveChannels()
+	go rn.ready()
 	rn.transport.Start(rn.addr)
 }
 
 var snapshotCatchUpEntriesN uint64 = 10000
 
+// Propose data
 func (rn *RaftNode) Propose(p *pb.Pair) error {
-	// err := rn.node.Propose(context.TODO(), data)
-	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(p); err != nil {
-		rn.logger.Error("decode", zap.Error(err))
+	if p == nil {
+		return nil
+	}
+	byt, err := p.Marshal()
+	if err != nil {
+		logger.Error("marshal", zap.Error(err))
 		return err
 	}
-	return rn.node.Propose(context.TODO(), buf.Bytes())
+	return rn.node.Propose(context.TODO(), byt)
 }
 
+// LookUp a key
 func (rn *RaftNode) LookUp(k string) (*pb.Pair, bool) {
-	v, ok := rn.kvStore.LookUp(k)
+	v, ok := rn.kvStore.Get(k)
 	if !ok {
 		return nil, false
 	}
@@ -206,7 +195,7 @@ func (rn *RaftNode) LookUp(k string) (*pb.Pair, bool) {
 }
 
 // process for new propose && conf state change
-func (rn *RaftNode) serveChannels() {
+func (rn *RaftNode) ready() {
 	defer rn.snapHandler.Close()
 
 	ticker := time.NewTicker(time.Second)
@@ -218,14 +207,25 @@ func (rn *RaftNode) serveChannels() {
 			rn.node.Tick()
 		// store raft entries to wal, then publish over commit channel
 		case rd := <-rn.node.Ready():
-			rn.snapHandler.SaveToSnapshot(rd)
+			_ = rn.snapHandler.Save(rd)
 			_ = rn.transport.SendMsgList(rd.Messages)
-			applyDoneCh, ok := rn.publishEntries(rn.snapHandler.EntriesToApply(rd.CommittedEntries))
+			data, ok := rn.processEntries(rn.snapHandler.EntriesToApply(rd.CommittedEntries))
 			if !ok {
 				rn.stop()
 				return
 			}
-			rn.snapHandler.MaybeTriggerSnapshot(applyDoneCh)
+			// write data to store
+			if len(data) > 0 {
+				for _, item := range data {
+					var kv pb.Pair
+					if err := kv.Unmarshal(item); err != nil {
+						logger.Error("unmarshal kv", zap.Error(err))
+						continue
+					}
+					_ = rn.kvStore.Put(kv.Key, kv.Value)
+				}
+			}
+			rn.snapHandler.MaybeTriggerSnapshot()
 			rn.node.Advance()
 
 		case <-rn.stopCh:

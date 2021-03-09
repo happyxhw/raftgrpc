@@ -38,6 +38,7 @@ func init() {
 	rootCmd.AddCommand(newRemove())
 	rootCmd.AddCommand(newPut())
 	rootCmd.AddCommand(newGet())
+	rootCmd.AddCommand(newDel())
 }
 
 func run() {
@@ -135,7 +136,7 @@ func newPut() *cobra.Command {
 				logger.Error("new grpc client", zap.Error(err))
 				return
 			}
-			_, err = cli.Put(context.TODO(), &pb.Pair{Key: k, Value: v})
+			_, err = cli.KvAction(context.TODO(), &pb.Pair{Key: k, Value: v, Action: pb.Pair_INSERT})
 			if err != nil {
 				logger.Error("put", zap.Error(err))
 				return
@@ -164,7 +165,7 @@ func newGet() *cobra.Command {
 				logger.Error("new grpc client", zap.Error(err))
 				return
 			}
-			resp, err := cli.Get(context.TODO(), &pb.Pair{Key: k})
+			resp, err := cli.KvAction(context.TODO(), &pb.Pair{Key: k, Action: pb.Pair_QUERY})
 			if err != nil {
 				logger.Error("get", zap.Error(err))
 				return
@@ -180,6 +181,33 @@ func newGet() *cobra.Command {
 	getCmd.Flags().StringVar(&k, "key", "", "key")
 	_ = getCmd.MarkFlagRequired("key")
 	return getCmd
+}
+
+func newDel() *cobra.Command {
+	var k string
+	var delCmd = &cobra.Command{
+		Use:   "del",
+		Short: "del a kv",
+		Run: func(cmd *cobra.Command, args []string) {
+			addr := rootCmd.Flag("addr").Value.String()
+			cli, err := newClient(addr)
+			if err != nil {
+				logger.Error("new grpc client", zap.Error(err))
+				return
+			}
+			_, err = cli.KvAction(context.TODO(), &pb.Pair{Key: k, Action: pb.Pair_DELETE})
+			if err != nil {
+				logger.Error("get", zap.Error(err))
+				return
+			}
+		},
+		Example: `
+        ./raftcmd del --addr 127.0.0.1:8002 --key mykey
+        `,
+	}
+	delCmd.Flags().StringVar(&k, "key", "", "key")
+	_ = delCmd.MarkFlagRequired("key")
+	return delCmd
 }
 
 func startNode(addr string, join bool, peers []string) {

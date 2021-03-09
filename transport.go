@@ -49,6 +49,18 @@ func NewGrpcTransport(node *RaftNode, logger *zap.Logger) *GrpcTransport {
 	}
 }
 
+// KvAction kv store action
+func (gt *GrpcTransport) KvAction(ctx context.Context, pair *pb.Pair) (*pb.KvResp, error) {
+	var resp pb.KvResp
+	switch pair.Action {
+	case pb.Pair_INSERT, pb.Pair_UPDATE, pb.Pair_DELETE:
+		return gt.putOrDel(ctx, pair)
+	case pb.Pair_QUERY:
+		return gt.get(ctx, pair)
+	}
+	return &resp, nil
+}
+
 // Start transport
 func (gt *GrpcTransport) Start(addr string) error {
 	lis, err := net.Listen("tcp", addr)
@@ -133,7 +145,7 @@ func (gt *GrpcTransport) Leave(ctx context.Context, info *pb.NodeInfo) (*pb.Leav
 	return resp, nil
 }
 
-func (gt *GrpcTransport) Put(ctx context.Context, pair *pb.Pair) (*pb.KvResp, error) {
+func (gt *GrpcTransport) putOrDel(ctx context.Context, pair *pb.Pair) (*pb.KvResp, error) {
 	err := gt.raftNode.Propose(pair)
 	if err != nil {
 		return nil, err
@@ -141,7 +153,7 @@ func (gt *GrpcTransport) Put(ctx context.Context, pair *pb.Pair) (*pb.KvResp, er
 	return &pb.KvResp{Success: true}, nil
 }
 
-func (gt *GrpcTransport) Get(ctx context.Context, pair *pb.Pair) (*pb.KvResp, error) {
+func (gt *GrpcTransport) get(ctx context.Context, pair *pb.Pair) (*pb.KvResp, error) {
 	p, ok := gt.raftNode.LookUp(pair.Key)
 	resp := pb.KvResp{}
 	if ok {

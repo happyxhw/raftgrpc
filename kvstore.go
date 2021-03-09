@@ -66,7 +66,11 @@ func (kv *MapKvStore) Put(key, val string) error {
 
 // Del a key
 func (kv *MapKvStore) Del(key string) (string, error) {
-	return "", nil
+	kv.Lock()
+	defer kv.Unlock()
+	val := kv.kvStore[key]
+	delete(kv.kvStore, key)
+	return val, nil
 }
 
 // Snapshot return snapshot data

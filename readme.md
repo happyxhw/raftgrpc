@@ -42,6 +42,13 @@ go build
 ./raftcmd get --addr 127.0.0.1:8001 --key mykey
 ```
 
+### del a key
+```shell
+./raftcmd del -h
+
+./raftcmd del --addr 127.0.0.1:8001 --key mykey
+```
+
 ### join a cluster (not work now)
 ```shell
 ./raftcmd join -h

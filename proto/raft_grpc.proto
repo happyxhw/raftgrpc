@@ -12,8 +12,7 @@ service Raft {
   rpc Join(NodeInfo) returns (JoinResp) {}
   rpc Leave(NodeInfo) returns (LeaveResp) {}
 
-  rpc Put(Pair) returns (KvResp) {}
-  rpc Get(Pair) returns (KvResp) {}
+  rpc KvAction(Pair) returns (KvResp) {}
 }
 
 message NodeInfo {
@@ -42,12 +41,19 @@ message LeaveResp {
 }
 
 message Pair {
-  string key = 1;
+  string key   = 1;
   string value = 2;
+  enum Action {
+    INSERT = 0;
+    UPDATE = 1;
+    DELETE = 2;
+    QUERY  = 3;
+  }
+  Action action = 3;
 }
 
 message KvResp {
   bool success = 1;
-  Pair pair = 2;
+  Pair pair    = 2;
   string error = 3;
 }

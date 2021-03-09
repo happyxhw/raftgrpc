@@ -222,7 +222,12 @@ func (rn *RaftNode) ready() {
 						logger.Error("unmarshal kv", zap.Error(err))
 						continue
 					}
-					_ = rn.kvStore.Put(kv.Key, kv.Value)
+					switch kv.Action {
+					case pb.Pair_UPDATE, pb.Pair_INSERT:
+						_ = rn.kvStore.Put(kv.Key, kv.Value)
+					case pb.Pair_DELETE:
+						_, _ = rn.kvStore.Del(kv.Key)
+					}
 				}
 			}
 			rn.snapHandler.MaybeTriggerSnapshot()
